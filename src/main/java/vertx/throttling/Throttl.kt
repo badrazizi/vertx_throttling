@@ -3,7 +3,9 @@ package vertx.throttling
 import io.vertx.ext.web.Router
 
 interface Throttl {
-  fun getThrottlingRouter(): Router
-
-  fun getThrottlingRouter(router: Router): Router
+  companion object {
+    fun getThrottling(vertx: Vertx, ips: List<String>? = null): ThrottlImpl {
+      return ThrottlImpl(vertx, ips)
+    }
+  }
 }
