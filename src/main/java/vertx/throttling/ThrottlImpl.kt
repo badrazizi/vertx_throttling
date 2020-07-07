@@ -10,9 +10,13 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
   private lateinit var router: Router
   private val clients = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
   var includeHeaders: Boolean = true
+    private set
   var throttlingRequest: Int = 30
+    private set
   var throttlingTime: Long = 60_000
-  var periodicThrottlingCheck: Long = 1_000
+    private set
+  var periodicTime: Long = 1_000
+    private set
   var originalIPFrom: List<String> = ips ?: arrayListOf(
     "103.21.244.0/22",
     "103.22.200.0/22",
@@ -30,25 +34,43 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
     "198.41.128.0/17",
     "199.27.128.0/21"
   )
-  var ipHeaders: List<String> = arrayListOf(
+    private set
+  private var ipHeaders: List<String> = arrayListOf(
     "CF-Connecting-IP",
     "True-Client-IP"
   )
+    private set
   private val cidrs: MutableList<CIDRUtils> = arrayListOf()
 
-  override fun getThrottlingRouter(): Router {
-    this.router = Router.router(vertx)
-    return getThrottlingRouter(router)
+  fun includeHeaders(enabled: Boolean = true) = apply {
+    this.includeHeaders = enabled
   }
 
-  override fun getThrottlingRouter(router: Router): Router {
+  fun throttlingRequest(count: Int = 30) = apply {
+    this.throttlingRequest = count
+  }
+
+  fun throttlingTime(time: Long = 60_000) = apply {
+    this.throttlingTime = time
+  }
+
+  fun periodicTime(time: Long = 1_000) = apply {
+    this.periodicTime = time
+  }
+
+  fun getRouter(): Router {
+    this.router = ShareableRouter.router(vertx)
+    return getRouter(router)
+  }
+
+  fun getRouter(router: Router): Router {
     for (ip in originalIPFrom) {
-      if(ip.contains("/")) {
+      if (ip.contains("/")) {
         cidrs.add(CIDRUtils(ip))
       }
     }
     router.route().handler(throttlingHandler)
-    vertx.setPeriodic(periodicThrottlingCheck, throttlingReseter)
+    vertx.setPeriodic(periodicTime, throttlingReseter)
     this.router = router
     return router
   }
@@ -107,7 +129,7 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
         this.time = Date().time
       })
 
-      if(includeHeaders) {
+      if (includeHeaders) {
         ctx.response().putHeader("RATE_LIMIT_COUNT", "1")
         ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
         ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
@@ -117,7 +139,7 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
       return@Handler
     } else {
       if (ipFound.throttl >= throttlingRequest) {
-        if(includeHeaders) {
+        if (includeHeaders) {
           ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
           ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
           ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
@@ -129,7 +151,7 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
 
       ipFound.throttl += 1
 
-      if(includeHeaders) {
+      if (includeHeaders) {
         ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
         ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
         ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
