@@ -7,13 +7,9 @@ import io.vertx.ext.web.RoutingContext
 import java.util.*
 
 @Volatile
-private var clients = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
+private var inCustomData = CustomData()
 
-@Volatile
-private var periodicID: Long = -1
-
-class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private val customData: CustomData? = null) : Throttl {
-
+class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private val customData: CustomData? = null) {
   private lateinit var router: Router
   var includeHeaders: Boolean = true
     private set
@@ -41,13 +37,17 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private v
     "199.27.128.0/21"
   )
     private set
-  private var ipHeaders: List<String> = arrayListOf(
+  var ipHeaders: List<String> = arrayListOf(
     "CF-Connecting-IP",
     "True-Client-IP"
   )
     private set
   private val cidrs: MutableList<CIDRUtils> = arrayListOf()
 
+  fun ipHeaders(headers: List<String>) = apply {
+    this.ipHeaders = headers
+  }
+  
   fun includeHeaders(enabled: Boolean = true) = apply {
     this.includeHeaders = enabled
   }
@@ -78,12 +78,12 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private v
     router.route().handler(throttlingHandler)
 
     if(customData != null) {
-      if (customData.customPeriodicID == -1L) {
-        customData.setCustomPeriodicID(vertx.setPeriodic(periodicTime, throttlingReseter))
+      if (customData.periodicID == -1L) {
+        customData.setPeriodicID(vertx.setPeriodic(periodicTime, throttlingReseter))
       }
     } else {
-      if (periodicID == -1L) {
-        periodicID = vertx.setPeriodic(periodicTime, throttlingReseter)
+      if (inCustomData.periodicID == -1L) {
+        inCustomData.setPeriodicID(vertx.setPeriodic(periodicTime, throttlingReseter))
       }
     }
     this.router = router
@@ -93,15 +93,15 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private v
   private val throttlingReseter = Handler<Long> {
     val time = Date().time
     if (customData != null) {
-      synchronized(customData.customList) {
-        customData.customList.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
-          customData.customList.remove(c)
+      synchronized(customData.clients) {
+        customData.clients.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
+          customData.clients.remove(c)
         }
       }
     } else {
-      synchronized(clients) {
-        clients.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
-          clients.remove(c)
+      synchronized(inCustomData.clients) {
+        inCustomData.clients.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
+          inCustomData.clients.remove(c)
         }
       }
     }
@@ -139,13 +139,13 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private v
     }
 
     if(customData != null) {
-      synchronized(customData.customList) {
-        val ipFound = customData.customList.find { c -> c.ip == ip }
+      synchronized(customData.clients) {
+        val ipFound = customData.clients.find { c -> c.ip == ip }
 
         val time = Date().time
 
         if (ipFound == null) {
-          customData.customList.add(ThrottlingClients().apply {
+          customData.clients.add(ThrottlingClients().apply {
             this.ip = ip
             this.port = port
             this.throttl = 1
@@ -189,13 +189,13 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private v
         }
       }
     } else {
-      synchronized(clients) {
-        val ipFound = clients.find { c -> c.ip == ip }
+      synchronized(inCustomData.clients) {
+        val ipFound = inCustomData.clients.find { c -> c.ip == ip }
 
         val time = Date().time
 
         if (ipFound == null) {
-          clients.add(ThrottlingClients().apply {
+          inCustomData.clients.add(ThrottlingClients().apply {
             this.ip = ip
             this.port = port
             this.throttl = 1
