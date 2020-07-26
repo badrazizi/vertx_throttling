@@ -6,9 +6,15 @@ import io.vertx.ext.web.Router
 import io.vertx.ext.web.RoutingContext
 import java.util.*
 
-class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl {
+@Volatile
+private var clients = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
+
+@Volatile
+private var periodicID: Long = -1
+
+class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null, private val customData: CustomData? = null) : Throttl {
+
   private lateinit var router: Router
-  private val clients = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
   var includeHeaders: Boolean = true
     private set
   var throttlingRequest: Int = 30
@@ -59,7 +65,7 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
   }
 
   fun getRouter(): Router {
-    this.router = ShareableRouter.router(vertx)
+    this.router = Router.router(vertx)
     return getRouter(router)
   }
 
@@ -70,15 +76,34 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
       }
     }
     router.route().handler(throttlingHandler)
-    vertx.setPeriodic(periodicTime, throttlingReseter)
+
+    if(customData != null) {
+      if (customData.customPeriodicID == -1L) {
+        customData.setCustomPeriodicID(vertx.setPeriodic(periodicTime, throttlingReseter))
+      }
+    } else {
+      if (periodicID == -1L) {
+        periodicID = vertx.setPeriodic(periodicTime, throttlingReseter)
+      }
+    }
     this.router = router
     return router
   }
 
   private val throttlingReseter = Handler<Long> {
     val time = Date().time
-    clients.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
-      clients.remove(c)
+    if (customData != null) {
+      synchronized(customData.customList) {
+        customData.customList.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
+          customData.customList.remove(c)
+        }
+      }
+    } else {
+      synchronized(clients) {
+        clients.filter { c -> (time - c.time) > throttlingTime }.forEach { c ->
+          clients.remove(c)
+        }
+      }
     }
   }
 
@@ -87,8 +112,6 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
     val port = ctx.request().remoteAddress().port()
     val headers = ctx.request().headers()
 
-    // if server behind a service such as cloudflare
-    // check if ip in list or in range and retrieve ip from headers
     var ip = ""
     if (host in originalIPFrom || cidrs.any { it.isInRange(host) }) {
       if (headers.isEmpty || ipHeaders.isEmpty()) {
@@ -101,64 +124,120 @@ class ThrottlImpl(private val vertx: Vertx, ips: List<String>? = null) : Throttl
         if (foundHeader.isEmpty()) {
           continue
         } else {
-          // got ip address
           ip = headers[foundHeader[0]]
           break
         }
       }
 
     } else {
-      // got ip address
       ip = host
     }
 
     if (ip.isBlank()) {
-      // if ip is blank pass the handler to be processed
       ctx.next()
       return@Handler
     }
 
-    // check if client ip exist in the list
-    val ipFound = clients.find { c -> c.ip == ip }
+    if(customData != null) {
+      synchronized(customData.customList) {
+        val ipFound = customData.customList.find { c -> c.ip == ip }
 
-    if (ipFound == null) {
-      clients.add(ThrottlingClients().apply {
-        this.ip = ip
-        this.port = port
-        this.throttl = 1
-        this.time = Date().time
-      })
+        val time = Date().time
 
-      if (includeHeaders) {
-        ctx.response().putHeader("RATE_LIMIT_COUNT", "1")
-        ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
-        ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
-        ctx.response().putHeader("RATE_LIMIT_IP", ip)
-      }
-      ctx.next()
-      return@Handler
-    } else {
-      if (ipFound.throttl >= throttlingRequest) {
-        if (includeHeaders) {
-          ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
-          ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
-          ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
-          ctx.response().putHeader("RATE_LIMIT_IP", ip)
+        if (ipFound == null) {
+          customData.customList.add(ThrottlingClients().apply {
+            this.ip = ip
+            this.port = port
+            this.throttl = 1
+            this.time = time
+          })
+
+          if (includeHeaders) {
+            ctx.response().putHeader("RATE_LIMIT_COUNT", "1")
+            ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+            ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+            ctx.response().putHeader("RATE_LIMIT_IP", ip)
+          }
+          ctx.next()
+          return@Handler
+        } else {
+          if (ipFound.throttl >= throttlingRequest) {
+            if (includeHeaders) {
+              ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
+              ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+              ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+              ctx.response().putHeader("RATE_LIMIT_IP", ip)
+            }
+
+            ipFound.time = time
+
+            ctx.response().setStatusCode(429).end()
+            return@Handler
+          }
+
+          ipFound.throttl += 1
+          ipFound.time = time
+
+          if (includeHeaders) {
+            ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
+            ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+            ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+            ctx.response().putHeader("RATE_LIMIT_IP", ip)
+          }
+
+          ctx.next()
         }
-        ctx.response().setStatusCode(429).end()
-        return@Handler
       }
+    } else {
+      synchronized(clients) {
+        val ipFound = clients.find { c -> c.ip == ip }
 
-      ipFound.throttl += 1
+        val time = Date().time
 
-      if (includeHeaders) {
-        ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
-        ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
-        ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
-        ctx.response().putHeader("RATE_LIMIT_IP", ip)
+        if (ipFound == null) {
+          clients.add(ThrottlingClients().apply {
+            this.ip = ip
+            this.port = port
+            this.throttl = 1
+            this.time = time
+          })
+
+          if (includeHeaders) {
+            ctx.response().putHeader("RATE_LIMIT_COUNT", "1")
+            ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+            ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+            ctx.response().putHeader("RATE_LIMIT_IP", ip)
+          }
+          ctx.next()
+          return@Handler
+        } else {
+          if (ipFound.throttl >= throttlingRequest) {
+            if (includeHeaders) {
+              ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
+              ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+              ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+              ctx.response().putHeader("RATE_LIMIT_IP", ip)
+            }
+
+            ipFound.time = time
+
+            ctx.response().setStatusCode(429).end()
+            return@Handler
+          }
+
+          ipFound.throttl += 1
+          ipFound.time = time
+
+          if (includeHeaders) {
+            ctx.response().putHeader("RATE_LIMIT_COUNT", "${ipFound.throttl}")
+            ctx.response().putHeader("RATE_LIMIT_MAX", "$throttlingRequest")
+            ctx.response().putHeader("RATE_LIMIT_TIME", "${throttlingTime / 1000}")
+            ctx.response().putHeader("RATE_LIMIT_IP", ip)
+          }
+
+          ctx.next()
+        }
       }
-
-      ctx.next()
     }
   }
 }
