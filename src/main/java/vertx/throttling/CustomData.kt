@@ -5,15 +5,15 @@ import io.vertx.core.json.JsonObject
 import java.util.*
 
 class CustomData {
-  var customList: MutableCollection<ThrottlingClients> = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
+  var clients: MutableCollection<ThrottlingClients> = Collections.synchronizedCollection(arrayListOf<ThrottlingClients>())
     private set
 
-  var customPeriodicID: Long = -1
+  var periodicID: Long = -1
     private set
 
-  fun setCustomPeriodicID(id: Long) = apply { this.customPeriodicID = id }
+  fun setPeriodicID(id: Long) = apply { this.periodicID = id }
 
   override fun toString(): String {
-    return JsonObject().put("ID", customPeriodicID).put("list", JsonArray(customList.toString())).toString()
+    return JsonObject().put("ID", periodicID).put("list", JsonArray(clients.toString())).toString()
   }
 }
