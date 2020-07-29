@@ -13,8 +13,8 @@ private var clients = CustomData()
 val throttling = Throttl
         .getThrottling(vertx, null, clients)
         .includeHeaders(true) // will add throttling header to the response (default true).
-        .throttlingRequest(30) // requests limit (default 30 request).
-        .throttlingTime(60_000) // time limit (default 6 seconds).
+        .throttlingRequest(30) // requests limit (default 30 requests).
+        .throttlingTime(60_000) // time limit (default 60 seconds).
         .periodicTime(1_000) // periodic check to reset clients (default 1 second).
         
 val router = throttling.getRouter()
