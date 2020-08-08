@@ -1,6 +1,5 @@
 package vertx.throttling
 
-import io.vertx.ext.web.Router
 import io.vertx.core.Vertx
 
 interface Throttl {
