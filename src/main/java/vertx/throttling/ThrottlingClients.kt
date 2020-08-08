@@ -1,5 +1,7 @@
 package vertx.throttling
 
+import io.vertx.core.json.JsonObject
+
 class ThrottlingClients {
   var ip: String = ""
   var port: Int = -1
